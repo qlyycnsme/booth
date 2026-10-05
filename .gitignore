@@ -1,0 +1,25 @@
+# Compiler files
+cache/
+out/
+
+# Commonly ignored directories
+.logs/
+.ignore/
+
+# Broadcast logs (may contain local paths / deployer metadata)
+broadcast/
+
+# Docs
+docs/
+
+web/node_modules/
+web/dist/
+web/server/data/
+
+.env
+.env.*
+!.env.example
+
+# Foundry
+cache/
+out/

@@ -1,0 +1,14 @@
+[profile.default]
+src = "src"
+out = "out"
+libs = ["lib"]
+solc = "0.8.28"
+optimizer = true
+optimizer_runs = 200
+via_ir = true
+evm_version = "cancun"
+fs_permissions = [{ access = "read", path = "./" }]
+
+[rpc_endpoints]
+arc = "https://rpc.mainnet.arc.io"
+arc_testnet = "https://rpc.testnet.arc.io"

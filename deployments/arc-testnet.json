@@ -1,0 +1,16 @@
+{
+  "chainId": 5042002,
+  "network": "arc-testnet",
+  "rpc": "https://rpc.testnet.arc.io",
+  "explorer": "https://explorer.testnet.arc.io",
+  "usdc": "0x3600000000000000000000000000000000000000",
+  "booth": "0xeba932E6D6cBe3530324B5b2d56904251883aD59",
+  "boothClub": "0x0a7038198fEf3B8fB6825A732DACE28Df0B7d527",
+  "ops": "0xcAa6f7793cA6Cb2f05451EB809a543483342Aca6",
+  "protocolOwner": "0xcAa6f7793cA6Cb2f05451EB809a543483342Aca6",
+  "stakeToCreate": "10000000",
+  "minVaultStake": "100000000000000000000",
+  "periodDays": 90,
+  "stakeLockDays": 90,
+  "notes": "Create stake is 10 USDC locked 90 days; dues cover 90 days; vault BOOTH lock 90 days"
+}
