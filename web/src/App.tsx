@@ -532,7 +532,6 @@ export function App() {
       <header className="top">
         <div className="brand">
           <h1>{t("brand")}</h1>
-          <p className="tag">{t("tagline")}</p>
         </div>
         <div className="wallet">
           <LangToggle />
