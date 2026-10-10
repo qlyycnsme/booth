@@ -16,8 +16,8 @@ export const arcTestnet = defineChain({
 });
 
 export const USDC = "0x3600000000000000000000000000000000000000" as const;
-export const BOOTH = "0xeba932E6D6cBe3530324B5b2d56904251883aD59" as const;
-export const BOOTH_CLUB = "0x0a7038198fEf3B8fB6825A732DACE28Df0B7d527" as const;
+export const BOOTH = "0xabBFf6eF1f160dbF1e9c96E2b59Da0CDd2568676" as const;
+export const BOOTH_CLUB = "0x9a7544566926B5577449D4393fE38939E1B94376" as const;
 
 export const config = createConfig({
   chains: [arcTestnet],

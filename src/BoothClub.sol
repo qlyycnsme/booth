@@ -5,23 +5,28 @@ import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import {ECDSA} from "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
+import {MessageHashUtils} from "@openzeppelin/contracts/utils/cryptography/MessageHashUtils.sol";
+import {Strings} from "@openzeppelin/contracts/utils/Strings.sol";
 
 /// @title BoothClub
-/// @notice One contract, many clubs. USDC dues cover a 90-day period and are time-prorated.
-///         Creating a club locks 10 USDC (configurable) for 90 days.
+/// @notice One contract, many clubs. Owner picks a 1 / 3 / 6 month dues period at create.
+///         Creating a club locks stakeToCreate USDC for STAKE_LOCK.
 ///         5% of used dues accrues to ops; 95% sits in the club pool.
+///         Club owner pays PRICE_CHANGE_FEE USDC to ops on each setPrice.
 ///         Each period: club owner claims 50% of the pool; remaining 50% is split
-///         by time-weighted BOOTH stake among the top 5 members (owner excluded).
+///         by time-weighted BOOTH stake among the top 5 stakers (club owner may be included).
 ///         Payments are pull-based so one blocked address cannot brick others.
 contract BoothClub is Ownable, ReentrancyGuard {
     using SafeERC20 for IERC20;
 
-    uint256 public constant PERIOD = 90 days;
     uint256 public constant STAKE_LOCK = 90 days;
     uint256 public constant MIN_STAY = 1 hours;
     uint256 public constant OPS_BPS = 500;
     uint256 public constant OWNER_POOL_BPS = 5_000;
     uint256 public constant BPS_DENOM = 10_000;
+    /// @notice Flat USDC fee (6 dp) charged to club owner on every setPrice.
+    uint256 public constant PRICE_CHANGE_FEE = 5_000_000;
     uint256 public constant MAX_STAKERS = 200;
     uint256 public constant TOP_N = 5;
 
@@ -29,13 +34,18 @@ contract BoothClub is Ownable, ReentrancyGuard {
     IERC20 public immutable booth;
 
     address public ops;
+    /// @notice Signs free-create vouchers after off-chain Twitter follower check.
+    address public createSigner;
     uint256 public stakeToCreate;
     uint256 public minVaultStake;
     uint256 public nextClubId;
+    /// @dev One free create per wallet (5k+ followers verified off-chain).
+    mapping(address => bool) public freeCreateUsed;
 
     struct Club {
         address owner;
-        uint96 monthlyPrice; // price for one PERIOD (90 days)
+        uint96 monthlyPrice; // dues for one membership period
+        uint8 periodMonths; // 1, 3, or 6
         uint40 periodStart;
         uint40 createUnlockAt;
         uint32 epoch;
@@ -70,8 +80,11 @@ contract BoothClub is Ownable, ReentrancyGuard {
     ///      settleExpired cannot grief a rival out of the monthly split.
     mapping(uint256 => mapping(uint32 => mapping(address => bool))) public servedEpoch;
 
-    event ClubCreated(uint256 indexed clubId, address indexed owner, uint96 monthlyPrice, uint256 stake);
+    event ClubCreated(
+        uint256 indexed clubId, address indexed owner, uint96 monthlyPrice, uint8 periodMonths, uint256 stake
+    );
     event PriceSet(uint256 indexed clubId, uint96 monthlyPrice);
+    event PeriodSet(uint256 indexed clubId, uint8 periodMonths);
     event Joined(uint256 indexed clubId, address indexed user, uint256 paid, uint40 expiresAt);
     event Settled(
         uint256 indexed clubId,
@@ -87,9 +100,11 @@ contract BoothClub is Ownable, ReentrancyGuard {
     event UsdcClaimed(address indexed user, uint256 amount);
     event ClubClosed(uint256 indexed clubId);
     event ParamsSet(address ops, uint256 stakeToCreate, uint256 minVaultStake);
+    event CreateSignerSet(address createSigner);
 
     error InvalidAddress();
     error InvalidAmount();
+    error InvalidPeriod();
     error NotClubOwner();
     error ClubInactive();
     error AlreadyMember();
@@ -104,24 +119,50 @@ contract BoothClub is Ownable, ReentrancyGuard {
     error MembersRemain();
     error StakersRemain();
     error NotStaked();
+    error FreeCreateUsed();
+    error BadSignature();
+    error DeadlineExpired();
 
     constructor(
         address usdc_,
         address booth_,
         address ops_,
         address protocolOwner_,
+        address createSigner_,
         uint256 stakeToCreate_,
         uint256 minVaultStake_
     ) Ownable(protocolOwner_) {
-        if (usdc_ == address(0) || booth_ == address(0) || ops_ == address(0) || protocolOwner_ == address(0)) {
+        if (
+            usdc_ == address(0) || booth_ == address(0) || ops_ == address(0) || protocolOwner_ == address(0)
+                || createSigner_ == address(0)
+        ) {
             revert InvalidAddress();
         }
         if (stakeToCreate_ == 0 || minVaultStake_ == 0) revert InvalidAmount();
         usdc = IERC20(usdc_);
         booth = IERC20(booth_);
         ops = ops_;
+        createSigner = createSigner_;
         stakeToCreate = stakeToCreate_;
         minVaultStake = minVaultStake_;
+    }
+
+    function setCreateSigner(address createSigner_) external onlyOwner {
+        if (createSigner_ == address(0)) revert InvalidAddress();
+        createSigner = createSigner_;
+        emit CreateSignerSet(createSigner_);
+    }
+
+    /// @notice Membership / accounting length for a periodMonths choice.
+    function periodLength(uint8 months) public pure returns (uint256) {
+        if (months == 1) return 30 days;
+        if (months == 3) return 90 days;
+        if (months == 6) return 180 days;
+        revert InvalidPeriod();
+    }
+
+    function periodOf(uint256 clubId) external view returns (uint256) {
+        return periodLength(clubs[clubId].periodMonths);
     }
 
     function setParams(address ops_, uint256 stakeToCreate_, uint256 minVaultStake_) external onlyOwner {
@@ -133,16 +174,56 @@ contract BoothClub is Ownable, ReentrancyGuard {
         emit ParamsSet(ops_, stakeToCreate_, minVaultStake_);
     }
 
-    function createClub(uint96 monthlyPrice) external nonReentrant returns (uint256 clubId) {
+    function createClub(uint96 monthlyPrice, uint8 periodMonths) external nonReentrant returns (uint256 clubId) {
         if (monthlyPrice == 0) revert InvalidAmount();
+        periodLength(periodMonths); // reverts unless 1 / 3 / 6
         uint256 createAmount = stakeToCreate;
         usdc.safeTransferFrom(msg.sender, address(this), createAmount);
+        clubId = _openClub(msg.sender, monthlyPrice, periodMonths, createAmount, block.timestamp + STAKE_LOCK);
+    }
+
+    /// @notice Message signed by `createSigner` for a free create voucher.
+    function freeCreateMessage(address account, uint256 deadline) public pure returns (string memory) {
+        return string.concat(
+            "Booth free create\naddr: ",
+            Strings.toHexString(account),
+            "\ndeadline: ",
+            Strings.toString(deadline)
+        );
+    }
+
+    /// @notice Free create once per wallet when `createSigner` attests Twitter followers off-chain.
+    function createClubFree(
+        uint96 monthlyPrice,
+        uint8 periodMonths,
+        uint256 deadline,
+        bytes calldata signature
+    ) external nonReentrant returns (uint256 clubId) {
+        if (monthlyPrice == 0) revert InvalidAmount();
+        periodLength(periodMonths);
+        if (freeCreateUsed[msg.sender]) revert FreeCreateUsed();
+        if (block.timestamp > deadline) revert DeadlineExpired();
+        bytes32 digest = MessageHashUtils.toEthSignedMessageHash(bytes(freeCreateMessage(msg.sender, deadline)));
+        if (ECDSA.recover(digest, signature) != createSigner) revert BadSignature();
+        freeCreateUsed[msg.sender] = true;
+        // No USDC lock; unlock immediately so an empty free club can be closed anytime.
+        clubId = _openClub(msg.sender, monthlyPrice, periodMonths, 0, block.timestamp);
+    }
+
+    function _openClub(
+        address owner_,
+        uint96 monthlyPrice,
+        uint8 periodMonths,
+        uint256 createAmount,
+        uint256 unlockAt
+    ) internal returns (uint256 clubId) {
         clubId = ++nextClubId;
         clubs[clubId] = Club({
-            owner: msg.sender,
+            owner: owner_,
             monthlyPrice: monthlyPrice,
+            periodMonths: periodMonths,
             periodStart: uint40(block.timestamp),
-            createUnlockAt: uint40(block.timestamp + STAKE_LOCK),
+            createUnlockAt: uint40(unlockAt),
             epoch: 1,
             memberCount: 0,
             stakerCount: 0,
@@ -150,16 +231,29 @@ contract BoothClub is Ownable, ReentrancyGuard {
             createStake: uint128(createAmount),
             active: true
         });
-        emit ClubCreated(clubId, msg.sender, monthlyPrice, createAmount);
+        emit ClubCreated(clubId, owner_, monthlyPrice, periodMonths, createAmount);
     }
 
-    function setPrice(uint256 clubId, uint96 monthlyPrice) external {
+    function setPrice(uint256 clubId, uint96 monthlyPrice) external nonReentrant {
         Club storage c = clubs[clubId];
         if (msg.sender != c.owner) revert NotClubOwner();
         if (!c.active) revert ClubInactive();
         if (monthlyPrice == 0) revert InvalidAmount();
+        usdc.safeTransferFrom(msg.sender, address(this), PRICE_CHANGE_FEE);
+        usdcClaimable[ops] += PRICE_CHANGE_FEE;
         c.monthlyPrice = monthlyPrice;
         emit PriceSet(clubId, monthlyPrice);
+    }
+
+    /// @notice Change 1/3/6 month length. Only when no active paid members (avoids breaking prorate).
+    function setPeriod(uint256 clubId, uint8 periodMonths) external {
+        Club storage c = clubs[clubId];
+        if (msg.sender != c.owner) revert NotClubOwner();
+        if (!c.active) revert ClubInactive();
+        if (c.memberCount != 0) revert MembersRemain();
+        periodLength(periodMonths); // reverts unless 1 / 3 / 6
+        c.periodMonths = periodMonths;
+        emit PeriodSet(clubId, periodMonths);
     }
 
     function join(uint256 clubId) external nonReentrant {
@@ -168,10 +262,11 @@ contract BoothClub is Ownable, ReentrancyGuard {
         Membership storage m = memberships[clubId][msg.sender];
         if (m.paid != 0) revert AlreadyMember();
         uint256 price = c.monthlyPrice;
+        uint256 length = periodLength(c.periodMonths);
         usdc.safeTransferFrom(msg.sender, address(this), price);
         m.paid = uint128(price);
         m.joinedAt = uint40(block.timestamp);
-        m.expiresAt = uint40(block.timestamp + PERIOD);
+        m.expiresAt = uint40(block.timestamp + length);
         servedEpoch[clubId][c.epoch][msg.sender] = true;
         unchecked {
             c.memberCount += 1;
@@ -237,11 +332,12 @@ contract BoothClub is Ownable, ReentrancyGuard {
         emit Unstaked(clubId, msg.sender, amount);
     }
 
-    /// @notice Close a period and assign pool shares. Anyone may call after PERIOD.
+    /// @notice Close a period and assign pool shares. Anyone may call after the club's period length.
     function distribute(uint256 clubId) external nonReentrant {
         Club storage c = clubs[clubId];
         if (!c.active) revert ClubInactive();
-        if (block.timestamp < uint256(c.periodStart) + PERIOD) revert TooEarly();
+        uint256 length = periodLength(c.periodMonths);
+        if (block.timestamp < uint256(c.periodStart) + length) revert TooEarly();
 
         uint256 pool = c.feePool;
         c.feePool = 0;
@@ -339,16 +435,17 @@ contract BoothClub is Ownable, ReentrancyGuard {
         if (paid == 0) revert NotMember();
         if (requireExpired && block.timestamp < m.expiresAt) revert NotExpired();
 
+        uint256 length = periodLength(c.periodMonths);
         uint256 elapsed;
         if (block.timestamp >= m.expiresAt) {
-            elapsed = PERIOD;
+            elapsed = length;
         } else {
             elapsed = block.timestamp - m.joinedAt;
             if (elapsed < MIN_STAY) elapsed = MIN_STAY;
-            if (elapsed > PERIOD) elapsed = PERIOD;
+            if (elapsed > length) elapsed = length;
         }
 
-        uint256 used = (paid * elapsed) / PERIOD;
+        uint256 used = (paid * elapsed) / length;
         if (used > paid) used = paid;
         uint256 refund = paid - used;
         uint256 opsFee = (used * OPS_BPS) / BPS_DENOM;
@@ -400,10 +497,6 @@ contract BoothClub is Ownable, ReentrancyGuard {
         uint256 minStake = minVaultStake;
         for (uint256 i; i < len; i++) {
             address user = list[i];
-            if (user == c.owner) {
-                _accrue(clubId, user);
-                continue;
-            }
             _accrue(clubId, user);
             VaultPosition storage p = vaults[clubId][user];
             if (p.amount < minStake) continue;

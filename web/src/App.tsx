@@ -8,10 +8,11 @@ import {
   useSwitchChain,
   useWriteContract,
 } from "wagmi";
-import { formatUnits, parseEventLogs, parseUnits, type Abi, type Address, type Hex } from "viem";
+import { formatUnits, maxUint256, parseEventLogs, parseUnits, type Abi, type Address, type Hex } from "viem";
 import boothClubAbiJson from "./abi/BoothClub.json";
-import { BOOTH, BOOTH_CLUB, USDC, arcTestnet, erc20Abi } from "./config";
+import { BOOTH_CLUB, USDC, arcTestnet, erc20Abi } from "./config";
 import { LangToggle, useLang } from "./i18n";
+import { clearSession, ensureSession, isUserReject, peekSession } from "./session";
 
 const clubAbi = boothClubAbiJson as Abi;
 
@@ -19,6 +20,7 @@ type ClubRow = {
   id: bigint;
   owner: Address;
   monthlyPrice: bigint;
+  periodMonths: number;
   memberCount: number;
   stakerCount: number;
   feePool: bigint;
@@ -28,7 +30,7 @@ type ClubRow = {
 };
 
 function clubTitle(c: { id: bigint; name?: string }) {
-  return c.name?.trim() || `Booth #${c.id.toString()}`;
+  return c.name?.trim() || `#${c.id.toString()}`;
 }
 
 type Profile = { name: string; bio: string; avatar: string; twitter?: string };
@@ -91,19 +93,16 @@ export function App() {
   const [status, setStatus] = useState("");
   const [busy, setBusy] = useState(false);
   const [price, setPrice] = useState("1");
+  const [periodMonths, setPeriodMonths] = useState<1 | 3 | 6>(3);
   const [clubName, setClubName] = useState("");
   const [clubBio, setClubBio] = useState("");
-  const [stakeAmt, setStakeAmt] = useState("100");
   const [clubs, setClubs] = useState<ClubRow[]>([]);
   const [selected, setSelected] = useState<bigint>(1n);
   const [usdcBal, setUsdcBal] = useState("0");
-  const [boothBal, setBoothBal] = useState("0");
   const [stakeToCreate, setStakeToCreate] = useState(0n);
-  const [minVault, setMinVault] = useState(0n);
+  const [priceChangeFee, setPriceChangeFee] = useState(5_000_000n);
   const [paid, setPaid] = useState(0n);
   const [expiresAt, setExpiresAt] = useState(0);
-  const [vaultAmt, setVaultAmt] = useState(0n);
-  const [lockUntil, setLockUntil] = useState(0);
   const [claimable, setClaimable] = useState(0n);
   const [tick, setTick] = useState(0);
   const [loadingList, setLoadingList] = useState(true);
@@ -117,13 +116,16 @@ export function App() {
       id: number;
       name: string;
       score: number;
-      stakeBooth: number;
+      lockUsdc: number;
       joinUsdc: number;
       leaveCount: number;
       activity: number;
     }[];
   } | null>(null);
   const [rankLoading, setRankLoading] = useState(false);
+  const [sideTab, setSideTab] = useState<"rooms" | "rank" | "create">("rooms");
+  const [editPrice, setEditPrice] = useState("1");
+  const [editPeriod, setEditPeriod] = useState<1 | 3 | 6>(3);
 
   const wrongChain = isConnected && chainId !== arcTestnet.id;
   const member =
@@ -135,6 +137,15 @@ export function App() {
     () => clubs.find((c) => c.id === selected),
     [clubs, selected],
   );
+  const isClubOwner =
+    !!address && !!selectedClub && address.toLowerCase() === selectedClub.owner.toLowerCase();
+
+  useEffect(() => {
+    if (!selectedClub) return;
+    setEditPrice(formatUnits(selectedClub.monthlyPrice, 6));
+    const m = selectedClub.periodMonths;
+    setEditPeriod(m === 1 || m === 6 ? m : 3);
+  }, [selectedClub?.id, selectedClub?.monthlyPrice, selectedClub?.periodMonths]);
 
   useEffect(() => {
     if (!publicClient) return;
@@ -142,7 +153,7 @@ export function App() {
     (async () => {
       try {
         setLoadingList(true);
-        const [n, createStake, minS] = await Promise.all([
+        const [n, createStake, changeFee] = await Promise.all([
           publicClient.readContract({
             address: BOOTH_CLUB,
             abi: clubAbi,
@@ -156,12 +167,12 @@ export function App() {
           publicClient.readContract({
             address: BOOTH_CLUB,
             abi: clubAbi,
-            functionName: "minVaultStake",
+            functionName: "PRICE_CHANGE_FEE",
           }) as Promise<bigint>,
         ]);
         if (cancelled) return;
         setStakeToCreate(createStake);
-        setMinVault(minS);
+        setPriceChangeFee(changeFee);
         const rows: ClubRow[] = [];
         for (let i = 1n; i <= n; i++) {
           const c = (await publicClient.readContract({
@@ -177,18 +188,21 @@ export function App() {
             number,
             number,
             number,
+            number,
             bigint,
             bigint,
             boolean,
           ];
+          // owner, price, periodMonths, periodStart, createUnlockAt, epoch, members, stakers, feePool, createStake, active
           rows.push({
             id: i,
             owner: c[0],
             monthlyPrice: c[1],
-            memberCount: Number(c[5]),
-            stakerCount: Number(c[6]),
-            feePool: c[7],
-            active: c[9],
+            periodMonths: Number(c[2]) || 3,
+            memberCount: Number(c[6]),
+            stakerCount: Number(c[7]),
+            feePool: c[8],
+            active: c[10],
             name: "",
             bio: "",
           });
@@ -253,15 +267,9 @@ export function App() {
     if (!publicClient || !address) return;
     let cancelled = false;
     (async () => {
-      const [u, b, m, v, cl] = await Promise.all([
+      const [u, m, cl] = await Promise.all([
         publicClient.readContract({
           address: USDC,
-          abi: erc20Abi,
-          functionName: "balanceOf",
-          args: [address],
-        }),
-        publicClient.readContract({
-          address: BOOTH,
           abi: erc20Abi,
           functionName: "balanceOf",
           args: [address],
@@ -275,23 +283,14 @@ export function App() {
         publicClient.readContract({
           address: BOOTH_CLUB,
           abi: clubAbi,
-          functionName: "vaults",
-          args: [selected, address],
-        }) as Promise<readonly [bigint, number, number, number, number, bigint]>,
-        publicClient.readContract({
-          address: BOOTH_CLUB,
-          abi: clubAbi,
           functionName: "usdcClaimable",
           args: [address],
         }) as Promise<bigint>,
       ]);
       if (cancelled) return;
       setUsdcBal(formatUnits(u, 6));
-      setBoothBal(formatUnits(b, 18));
       setPaid(m[0]);
       setExpiresAt(Number(m[2]));
-      setVaultAmt(v[0]);
-      setLockUntil(Number(v[1]));
       setClaimable(cl);
     })();
     return () => {
@@ -324,7 +323,7 @@ export function App() {
         address: token,
         abi: erc20Abi,
         functionName: "approve",
-        args: [BOOTH_CLUB, amount],
+        args: [BOOTH_CLUB, maxUint256],
       });
       await publicClient!.waitForTransactionReceipt({ hash });
     }
@@ -343,14 +342,44 @@ export function App() {
     try {
       await ensureChain();
       const monthly = parseUnits(price || "0", 6);
-      const hash = await approveAnd(USDC, stakeToCreate, () =>
-        writeContractAsync({
+      const session = await ensureSession(address, signMessageAsync);
+      const quote = (await fetch("/create-quote", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ address, session }),
+      }).then((r) => r.json())) as {
+        free?: boolean;
+        reason?: string;
+        followers?: number | null;
+        deadline?: number;
+        signature?: Hex;
+        error?: string;
+      };
+      if (quote.error) throw new Error(quote.error);
+
+      let hash: Hex;
+      if (quote.free && quote.signature && quote.deadline) {
+        setStatus(t("creatingFree", { n: quote.followers ?? 0 }));
+        hash = await writeContractAsync({
           address: BOOTH_CLUB,
           abi: clubAbi,
-          functionName: "createClub",
-          args: [monthly],
-        }),
-      );
+          functionName: "createClubFree",
+          args: [monthly, periodMonths, BigInt(quote.deadline), quote.signature],
+        });
+      } else {
+        if (quote.reason === "need_twitter") setStatus(t("createNeedTwitter"));
+        else if (quote.reason === "below_threshold") {
+          setStatus(t("createNeedFollowers", { n: quote.followers ?? 0, min: 5000 }));
+        }
+        hash = await approveAnd(USDC, stakeToCreate, () =>
+          writeContractAsync({
+            address: BOOTH_CLUB,
+            abi: clubAbi,
+            functionName: "createClub",
+            args: [monthly, periodMonths],
+          }),
+        );
+      }
       const receipt = await publicClient!.waitForTransactionReceipt({ hash });
       const created = parseEventLogs({
         abi: clubAbi,
@@ -358,10 +387,6 @@ export function App() {
       }) as { eventName?: string; args?: { clubId?: bigint } }[];
       const newId = created.find((e) => e.eventName === "ClubCreated")?.args?.clubId;
       if (newId !== undefined) {
-        const nonce = Date.now();
-        const signature = await signMessageAsync({
-          message: `Booth meta\nclub: ${newId.toString()}\nnonce: ${nonce}`,
-        });
         const res = await fetch("/meta", {
           method: "PUT",
           headers: { "content-type": "application/json" },
@@ -370,8 +395,7 @@ export function App() {
             name,
             bio: clubBio.trim(),
             address,
-            nonce,
-            signature,
+            session,
           }),
         });
         if (!res.ok) {
@@ -382,7 +406,7 @@ export function App() {
         setClubName("");
         setClubBio("");
       }
-      setStatus(t("roomCreated"));
+      setStatus(quote.free ? t("roomCreatedFree") : t("roomCreated"));
       setTick((x) => x + 1);
     } catch (e) {
       setStatus(errText(e, t("txFail")));
@@ -406,29 +430,6 @@ export function App() {
         }),
       );
       await send(hash, t("joined"));
-    } catch (e) {
-      setStatus(errText(e, t("txFail")));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function onStake() {
-    if (!address) return;
-    setBusy(true);
-    setStatus("");
-    try {
-      await ensureChain();
-      const amt = parseUnits(stakeAmt || "0", 18);
-      const hash = await approveAnd(BOOTH, amt, () =>
-        writeContractAsync({
-          address: BOOTH_CLUB,
-          abi: clubAbi,
-          functionName: "stake",
-          args: [selected, amt],
-        }),
-      );
-      await send(hash, t("staked"));
     } catch (e) {
       setStatus(errText(e, t("txFail")));
     } finally {
@@ -473,18 +474,26 @@ export function App() {
     }
   }
 
-  async function onUnstake() {
+  async function onSetPrice() {
+    if (!isClubOwner) return;
+    const next = parseUnits(editPrice || "0", 6);
+    if (next === 0n) {
+      setStatus(t("needPrice"));
+      return;
+    }
     setBusy(true);
     setStatus("");
     try {
       await ensureChain();
-      const hash = await writeContractAsync({
-        address: BOOTH_CLUB,
-        abi: clubAbi,
-        functionName: "unstake",
-        args: [selected],
-      });
-      await send(hash, t("unstaked"));
+      const hash = await approveAnd(USDC, priceChangeFee, () =>
+        writeContractAsync({
+          address: BOOTH_CLUB,
+          abi: clubAbi,
+          functionName: "setPrice",
+          args: [selected, next],
+        }),
+      );
+      await send(hash, t("priceUpdated"));
     } catch (e) {
       setStatus(errText(e, t("txFail")));
     } finally {
@@ -492,40 +501,70 @@ export function App() {
     }
   }
 
-  const locked = Date.now() < lockUntil * 1000;
+  async function onSetPeriod() {
+    if (!isClubOwner || !selectedClub) return;
+    if (selectedClub.memberCount > 0) {
+      setStatus(t("periodNeedEmpty"));
+      return;
+    }
+    setBusy(true);
+    setStatus("");
+    try {
+      await ensureChain();
+      const hash = await writeContractAsync({
+        address: BOOTH_CLUB,
+        abi: clubAbi,
+        functionName: "setPeriod",
+        args: [selected, editPeriod],
+      });
+      await send(hash, t("periodUpdated"));
+    } catch (e) {
+      setStatus(errText(e, t("txFail")));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   const working = busy || isPending;
 
   return (
-    <div className="wrap">
+    <div className="shell">
       <header className="top">
-        <div>
-          <h1>BOOTH</h1>
+        <div className="brand">
+          <h1>{t("brand")}</h1>
           <p className="tag">{t("tagline")}</p>
         </div>
         <div className="wallet">
           <LangToggle />
           {isConnected ? (
-            <>
+            <div className="wallet-card">
               <button type="button" className="me-chip" onClick={() => setProfileAddr(address!)}>
                 <Avatar addr={address!} profile={profiles[address!.toLowerCase()]} tiny />
-                <strong>{nickOf(address!, profiles)}</strong>
+                <span>
+                  <strong>{nickOf(address!, profiles)}</strong>
+                  <em>{usdcBal} USDC</em>
+                </span>
               </button>
-              <div>USDC {usdcBal}</div>
-              <div>BOOTH {Number(boothBal).toLocaleString()}</div>
-              {wrongChain && (
-                <button className="btn" onClick={() => switchChain({ chainId: arcTestnet.id })}>
-                  {t("switchChain")}
-                </button>
-              )}
-              <div className="row">
+              <div className="wallet-actions">
+                {wrongChain && (
+                  <button className="btn" onClick={() => switchChain({ chainId: arcTestnet.id })}>
+                    {t("switchChain")}
+                  </button>
+                )}
                 <button className="btn" onClick={() => setProfileAddr(address!)}>
                   {t("profile")}
                 </button>
-                <button className="btn" onClick={() => disconnect()}>
+                <button
+                  className="btn"
+                  onClick={() => {
+                    clearSession();
+                    disconnect();
+                  }}
+                >
                   {t("disconnect")}
                 </button>
               </div>
-            </>
+            </div>
           ) : (
             <button
               className="btn solid"
@@ -538,83 +577,137 @@ export function App() {
         </div>
       </header>
 
-      <div className="grid">
-        <aside className="panel">
-          <h2>{t("openRoom")}</h2>
-          <label>{t("roomName")}</label>
-          <input
-            value={clubName}
-            maxLength={40}
-            placeholder={t("roomNamePh")}
-            onChange={(e) => setClubName(e.target.value)}
-          />
-          <label>{t("roomBio")}</label>
-          <textarea
-            className="bio"
-            value={clubBio}
-            maxLength={200}
-            rows={3}
-            placeholder={t("roomBioPh")}
-            onChange={(e) => setClubBio(e.target.value)}
-          />
-          <label>{t("seasonFee")}</label>
-          <input value={price} onChange={(e) => setPrice(e.target.value)} />
-          <p className="tag">{t("needStake", { amount: formatUnits(stakeToCreate, 6) })}</p>
-          <div className="row">
-            <button className="btn solid" disabled={!isConnected || working} onClick={onCreate}>
-              {t("create")}
+      <div className="layout">
+        <aside className="rail panel">
+          <nav className="rail-tabs" aria-label="sidebar">
+            <button type="button" className={sideTab === "rooms" ? "on" : ""} onClick={() => setSideTab("rooms")}>
+              {t("rooms")}
             </button>
+            <button type="button" className={sideTab === "rank" ? "on" : ""} onClick={() => setSideTab("rank")}>
+              {t("rank")}
+            </button>
+            <button type="button" className={sideTab === "create" ? "on" : ""} onClick={() => setSideTab("create")}>
+              {t("openRoom")}
+            </button>
+          </nav>
+
+          <div className="rail-body">
+            {sideTab === "create" && (
+              <div className="rail-pane">
+                <p className="pane-lead">{t("createRule", { amount: formatUnits(stakeToCreate, 6), min: 5000 })}</p>
+                <label>{t("roomName")}</label>
+                <input
+                  value={clubName}
+                  maxLength={40}
+                  placeholder={t("roomNamePh")}
+                  onChange={(e) => setClubName(e.target.value)}
+                />
+                <label>{t("roomBio")}</label>
+                <textarea
+                  className="bio"
+                  value={clubBio}
+                  maxLength={200}
+                  rows={3}
+                  placeholder={t("roomBioPh")}
+                  onChange={(e) => setClubBio(e.target.value)}
+                />
+                <label>{t("periodLabel")}</label>
+                <div className="period-picks" role="group" aria-label={t("periodLabel")}>
+                  {([1, 3, 6] as const).map((m) => (
+                    <button
+                      key={m}
+                      type="button"
+                      className={periodMonths === m ? "on" : ""}
+                      onClick={() => setPeriodMonths(m)}
+                    >
+                      {t(`period${m}` as "period1" | "period3" | "period6")}
+                    </button>
+                  ))}
+                </div>
+                <label>{t("seasonFee")}</label>
+                <input value={price} onChange={(e) => setPrice(e.target.value)} />
+                <div className="row">
+                  <button className="btn solid" disabled={!isConnected || working} onClick={onCreate}>
+                    {t("create")}
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {sideTab === "rank" && (
+              <div className="rail-pane">
+                <p className="pane-lead">{t("rankHint")}</p>
+                {rank && (
+                  <div className="weight-chips">
+                    <span>
+                      {t("wStake")} {(rank.weights.stake * 100).toFixed(0)}%
+                    </span>
+                    <span>
+                      {t("wJoin")} {(rank.weights.join * 100).toFixed(0)}%
+                    </span>
+                    <span>
+                      {t("wLeave")} {(rank.weights.leave * 100).toFixed(0)}%
+                    </span>
+                    <span>
+                      {t("wAct")} {(rank.weights.activity * 100).toFixed(0)}%
+                    </span>
+                    <span className="day">{rank.day}</span>
+                  </div>
+                )}
+                <div className="scroll-list">
+                  {rankLoading && <p className="tag">{t("rankLoading")}</p>}
+                  {!rankLoading && rank && !rank.clubs.length && <p className="tag">{t("rankEmpty")}</p>}
+                  {!rankLoading &&
+                    rank?.clubs.map((r) => (
+                      <button
+                        key={`rank-${r.id}`}
+                        className={`club rank-row ${BigInt(r.id) === selected ? "active" : ""}`}
+                        onClick={() => {
+                          setSelected(BigInt(r.id));
+                          setSideTab("rooms");
+                          setProfileAddr(null);
+                        }}
+                      >
+                        <span className="rank-n">#{r.rank}</span>
+                        <span className="club-title">{r.name}</span>
+                        <small>
+                          {t("score")} {r.score.toFixed(2)} · {t("wAct")} {r.activity}
+                        </small>
+                      </button>
+                    ))}
+                </div>
+              </div>
+            )}
+
+            {sideTab === "rooms" && (
+              <div className="rail-pane">
+                <div className="scroll-list">
+                  {loadingList && <p className="tag">{t("loadingRooms")}</p>}
+                  {!loadingList &&
+                    clubs.map((c) => (
+                      <button
+                        key={c.id.toString()}
+                        className={`club ${c.id === selected ? "active" : ""}`}
+                        onClick={() => {
+                          setSelected(c.id);
+                          setProfileAddr(null);
+                        }}
+                      >
+                        <span className="club-title">{clubTitle(c)}</span>
+                        <small>
+                          {formatUnits(c.monthlyPrice, 6)}{" "}
+                          {t("perSeason", { n: c.memberCount, m: c.periodMonths })}
+                        </small>
+                      </button>
+                    ))}
+                  {!loadingList && !clubs.length && <p className="tag">{t("noRooms")}</p>}
+                </div>
+              </div>
+            )}
           </div>
-
-          <h2 style={{ marginTop: 22 }}>{t("rank")}</h2>
-          <p className="tag">{t("rankHint")}</p>
-          {rank && (
-            <p className="tag rank-weights">
-              {t("wStake")} {(rank.weights.stake * 100).toFixed(0)}% · {t("wJoin")}{" "}
-              {(rank.weights.join * 100).toFixed(0)}% · {t("wLeave")} {(rank.weights.leave * 100).toFixed(0)}% ·{" "}
-              {t("wAct")} {(rank.weights.activity * 100).toFixed(0)}%
-              <span> · {rank.day}</span>
-            </p>
-          )}
-          {rankLoading && <p className="tag">{t("rankLoading")}</p>}
-          {!rankLoading && rank && !rank.clubs.length && <p className="tag">{t("rankEmpty")}</p>}
-          {!rankLoading &&
-            rank?.clubs.map((r) => (
-              <button
-                key={`rank-${r.id}`}
-                className={`club rank-row ${BigInt(r.id) === selected ? "active" : ""}`}
-                onClick={() => setSelected(BigInt(r.id))}
-              >
-                <span className="rank-n">#{r.rank}</span>
-                {r.name}
-                <small>
-                  {t("score")} {r.score.toFixed(2)} · {t("wStake")}{" "}
-                  {(r.stakeBooth / 1e18).toFixed(0)} · {t("wJoin")} {(r.joinUsdc / 1e6).toFixed(0)} · {t("wLeave")}{" "}
-                  {r.leaveCount} · {t("wAct")} {r.activity}
-                </small>
-              </button>
-            ))}
-
-          <h2 style={{ marginTop: 22 }}>{t("rooms")}</h2>
-          {loadingList && <p className="tag">{t("loadingRooms")}</p>}
-          {!loadingList &&
-            clubs.map((c) => (
-            <button
-              key={c.id.toString()}
-              className={`club ${c.id === selected ? "active" : ""}`}
-              onClick={() => setSelected(c.id)}
-            >
-              {clubTitle(c)}
-              <small>
-                {c.bio ? `${c.bio} · ` : ""}
-                {formatUnits(c.monthlyPrice, 6)} {t("perSeason", { n: c.memberCount })}
-              </small>
-            </button>
-          ))}
-          {!loadingList && !clubs.length && <p className="tag">{t("noRooms")}</p>}
         </aside>
 
-        <main className="panel">
+        <main className="stage panel">
           {profileAddr ? (
             <ProfilePage
               addr={profileAddr}
@@ -627,7 +720,7 @@ export function App() {
               }}
             />
           ) : selectedClub ? (
-            <>
+            <div className="stage-body">
               <div className="club-head">
                 <div>
                   <strong>{clubTitle(selectedClub)}</strong>
@@ -636,6 +729,7 @@ export function App() {
                     {t("membersSeason", {
                       n: selectedClub.memberCount,
                       fee: formatUnits(selectedClub.monthlyPrice, 6),
+                      m: selectedClub.periodMonths,
                     })}
                     {" · "}
                     <button type="button" className="mute" onClick={() => setProfileAddr(selectedClub.owner)}>
@@ -665,8 +759,8 @@ export function App() {
                 onOpenProfile={setProfileAddr}
               />
 
-              <details className="more">
-                <summary>{t("feesVault")}</summary>
+              <details className="more" open={isClubOwner || undefined}>
+                <summary>{isClubOwner ? t("ownerSettings") : t("feesVault")}</summary>
                 <div className="kv">
                   <span>{t("owner")}</span>
                   <div>
@@ -686,38 +780,81 @@ export function App() {
                   </div>
                   <span>{t("feePool")}</span>
                   <div>{formatUnits(selectedClub.feePool, 6)} USDC</div>
-                  <span>{t("vault")}</span>
-                  <div>
-                    {vaultAmt === 0n
-                      ? t("notStaked")
-                      : `${formatUnits(vaultAmt, 18)} BOOTH${locked ? t("locked") : ""}`}
-                  </div>
                   <span>{t("claimable")}</span>
                   <div>{formatUnits(claimable, 6)} USDC</div>
                 </div>
-                <label>{t("stakeBooth", { min: formatUnits(minVault, 18) })}</label>
-                <input value={stakeAmt} onChange={(e) => setStakeAmt(e.target.value)} />
                 <div className="row">
-                  <button className="btn" disabled={!isConnected || working || !member} onClick={onStake}>
-                    {t("stakeIn")}
-                  </button>
-                  <button
-                    className="btn"
-                    disabled={!isConnected || working || vaultAmt === 0n || locked}
-                    onClick={onUnstake}
-                  >
-                    {t("unstake")}
-                  </button>
                   <button className="btn" disabled={!isConnected || working || claimable === 0n} onClick={onClaim}>
                     {t("claim")}
                   </button>
                 </div>
+                {isClubOwner ? (
+                  <div className="owner-edit">
+                    <p className="pane-lead">{t("ownerEditHint")}</p>
+                    <label>{t("seasonFee")}</label>
+                    <input value={editPrice} onChange={(e) => setEditPrice(e.target.value)} />
+                    <div className="row">
+                      <button className="btn solid" disabled={working} onClick={onSetPrice}>
+                        {t("savePrice")}
+                      </button>
+                    </div>
+                    <label>{t("periodLabel")}</label>
+                    <div className="period-picks" role="group" aria-label={t("periodLabel")}>
+                      {([1, 3, 6] as const).map((m) => (
+                        <button
+                          key={m}
+                          type="button"
+                          className={editPeriod === m ? "on" : ""}
+                          disabled={selectedClub.memberCount > 0}
+                          onClick={() => setEditPeriod(m)}
+                        >
+                          {t(`period${m}` as "period1" | "period3" | "period6")}
+                        </button>
+                      ))}
+                    </div>
+                    <p className="pane-lead">
+                      {selectedClub.memberCount > 0 ? t("periodNeedEmpty") : t("periodEditOk")}
+                    </p>
+                    <div className="row">
+                      <button
+                        className="btn"
+                        disabled={working || selectedClub.memberCount > 0 || editPeriod === selectedClub.periodMonths}
+                        onClick={onSetPeriod}
+                      >
+                        {t("savePeriod")}
+                      </button>
+                    </div>
+                  </div>
+                ) : null}
               </details>
-            </>
+            </div>
           ) : (
-            <p className="tag">{t("pickBooth")}</p>
+            <div className="empty-stage">
+              <p className="empty-brand">{t("brand")}</p>
+              <p className="empty-lead">{t("emptyLead")}</p>
+              <p className="empty-hint">{t("pickBooth")}</p>
+              <div className="empty-actions">
+                {!isConnected ? (
+                  <button
+                    className="btn solid"
+                    type="button"
+                    disabled={connecting}
+                    onClick={() => connect({ connector: connectors[0] })}
+                  >
+                    {t("connect")}
+                  </button>
+                ) : null}
+                <button className="btn solid" type="button" onClick={() => setSideTab("create")}>
+                  {t("openRoom")}
+                </button>
+              </div>
+            </div>
           )}
-          <p className={`status ${status.includes("失败") || status.toLowerCase().includes("fail") || status.includes("User") ? "err" : ""}`}>
+          <p
+            className={`status ${
+              status.includes("失败") || status.toLowerCase().includes("fail") || status.includes("User") ? "err" : ""
+            }`}
+          >
             {status}
           </p>
         </main>
@@ -725,6 +862,7 @@ export function App() {
     </div>
   );
 }
+
 
 type ChatMsg = { id: string; from: string; text: string; at: number };
 
@@ -751,7 +889,7 @@ function ProfilePage({
   const [twitter, setTwitter] = useState(profile?.twitter || "");
   const [busy, setBusy] = useState(false);
   const [hint, setHint] = useState("");
-  const proof = `booth:${addr.toLowerCase()}`;
+  const proof = `room:${addr.toLowerCase()}`;
 
   useEffect(() => {
     setName(profile?.name || "");
@@ -794,15 +932,13 @@ function ProfilePage({
     setBusy(true);
     setHint("");
     try {
-      const nonce = Date.now();
-      const signature = await signMessageAsync({ message: `Booth profile\nnonce: ${nonce}` });
+      const session = await ensureSession(addr, signMessageAsync);
       const res = await fetch("/profile", {
         method: "PUT",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
           address: addr,
-          nonce,
-          signature,
+          session,
           name: nick,
           bio: bio.trim(),
           avatar: avatarData || undefined,
@@ -830,18 +966,13 @@ function ProfilePage({
     try {
       const idMatch = raw.match(/\/status(?:es)?\/(\d+)/);
       if (!idMatch) throw new Error(t("needTweetLink"));
-      const normalized = `https://x.com/i/status/${idMatch[1]}`;
-      const nonce = Date.now();
-      const signature = await signMessageAsync({
-        message: `Booth twitter\naddr: ${addr.toLowerCase()}\nnonce: ${nonce}\nurl: ${normalized}`,
-      });
+      const session = await ensureSession(addr, signMessageAsync);
       const res = await fetch("/profile/twitter", {
         method: "PUT",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
           address: addr,
-          nonce,
-          signature,
+          session,
           tweetUrl: raw,
         }),
       });
@@ -863,14 +994,11 @@ function ProfilePage({
     setBusy(true);
     setHint("");
     try {
-      const nonce = Date.now();
-      const signature = await signMessageAsync({
-        message: `Booth twitter unbind\naddr: ${addr.toLowerCase()}\nnonce: ${nonce}`,
-      });
+      const session = await ensureSession(addr, signMessageAsync);
       const res = await fetch("/profile/twitter", {
         method: "DELETE",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ address: addr, nonce, signature }),
+        body: JSON.stringify({ address: addr, session }),
       });
       const body = (await res.json().catch(() => ({}))) as { error?: string };
       if (!res.ok) throw new Error(body.error || t("unbindFail"));
@@ -998,14 +1126,6 @@ function chatWsUrl() {
   return `${proto}//${location.host}/chat`;
 }
 
-function signBody(clubId: string, nonce: number) {
-  return `Booth chat\nclub: ${clubId}\nnonce: ${nonce}`;
-}
-
-function muteSignBody(clubId: string, target: string, nonce: number) {
-  return `Booth mute\nclub: ${clubId}\nuser: ${target}\nnonce: ${nonce}`;
-}
-
 function muteLeft(until: number, dayLabel: string, hourLabel: string) {
   if (until <= Date.now()) return "";
   const ms = until - Date.now();
@@ -1064,37 +1184,56 @@ function Room({
       return;
     }
 
-    let stopped = false;
-    (async () => {
-      setLive("signing");
-      setHint(t("chatSign"));
-      const nonce = Date.now();
+    let cancelled = false;
+    let retried = false;
+    // Defer past React StrictMode's fake unmount so the wallet request isn't aborted mid-confirm.
+    const timer = window.setTimeout(() => {
+      void connectWithSession(false);
+    }, 50);
+
+    async function connectWithSession(force = false) {
+      if (cancelled) return;
       const club = clubId.toString();
-      let signature: Hex;
-      try {
-        signature = await signMessageAsync({ message: signBody(club, nonce) });
-      } catch {
-        if (!stopped) {
-          setLive("err");
-          setHint(t("chatSignCancel"));
+      let session = force ? null : peekSession(me!);
+      if (!session) {
+        setLive("signing");
+        setHint(t("chatSign"));
+        try {
+          session = await ensureSession(me!, signMessageAsync, force);
+        } catch (e) {
+          if (cancelled) return;
+          // Sibling mount may have finished minting while this request looked "rejected".
+          const cached = peekSession(me!);
+          if (cached) {
+            session = cached;
+          } else {
+            setLive("err");
+            setHint(isUserReject(e) ? t("chatSignCancel") : errText(e, t("chatSignFail")));
+            return;
+          }
         }
-        return;
       }
-      if (stopped) return;
+      if (cancelled || !session) return;
+
+      setLive("signing");
       const ws = new WebSocket(chatWsUrl());
       wsRef.current = ws;
       ws.onopen = () => {
+        if (cancelled) {
+          ws.close();
+          return;
+        }
         ws.send(
           JSON.stringify({
             type: "hello",
             clubId: club,
             address: me,
-            nonce,
-            signature,
+            session,
           }),
         );
       };
       ws.onmessage = (ev) => {
+        if (cancelled) return;
         const data = JSON.parse(String(ev.data)) as {
           type: string;
           messages?: ChatMsg[];
@@ -1126,27 +1265,36 @@ function Room({
             setHint(t("chatMuted", { left: leftLabel(data.until) }));
           }
         } else if (data.type === "error") {
+          const msg = data.message || t("chatErr");
+          if (!retried && /bad auth|expired/i.test(msg)) {
+            retried = true;
+            ws.close();
+            void connectWithSession(true);
+            return;
+          }
           setLive("err");
-          setHint(data.message || t("chatErr"));
+          setHint(msg);
         }
       };
       ws.onerror = () => {
-        if (!stopped) {
+        if (!cancelled) {
           setLive("err");
           setHint(t("chatOffline"));
         }
       };
       ws.onclose = () => {
-        if (!stopped && live !== "err") setLive("off");
+        if (!cancelled) setLive((cur) => (cur === "err" ? cur : "off"));
       };
-    })();
+    }
 
     return () => {
-      stopped = true;
+      cancelled = true;
+      window.clearTimeout(timer);
       wsRef.current?.close();
       wsRef.current = null;
     };
-  }, [open, me, clubId, signMessageAsync, t, lang]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- avoid re-sign on lang/t changes
+  }, [open, me, clubId]);
 
   function send() {
     if (!open || !me || !text.trim() || live !== "on" || !wsRef.current) return;
@@ -1159,10 +1307,7 @@ function Room({
     if (!me || muting) return;
     setMuting(target);
     try {
-      const nonce = Date.now();
-      const signature = await signMessageAsync({
-        message: muteSignBody(clubId.toString(), target, nonce),
-      });
+      const session = await ensureSession(me, signMessageAsync);
       const res = await fetch("/mute", {
         method: "PUT",
         headers: { "content-type": "application/json" },
@@ -1170,8 +1315,7 @@ function Room({
           clubId: clubId.toString(),
           target,
           address: me,
-          nonce,
-          signature,
+          session,
         }),
       });
       const body = await res.json().catch(() => ({}));

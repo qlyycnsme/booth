@@ -9,8 +9,9 @@ out/
 # Broadcast logs (may contain local paths / deployer metadata)
 broadcast/
 
-# Docs
-docs/
+# Docs scratch; keep product rules tracked
+docs/*
+!docs/RULES.md
 
 web/node_modules/
 web/dist/

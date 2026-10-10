@@ -29,6 +29,12 @@ export default defineConfig({
       "/health": {
         target: "http://127.0.0.1:8787",
       },
+      "/session": {
+        target: "http://127.0.0.1:8787",
+      },
+      "/create-quote": {
+        target: "http://127.0.0.1:8787",
+      },
     },
   },
 });

@@ -23,6 +23,11 @@
         "internalType": "address"
       },
       {
+        "name": "createSigner_",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
         "name": "stakeToCreate_",
         "type": "uint256",
         "internalType": "uint256"
@@ -102,7 +107,7 @@
   },
   {
     "type": "function",
-    "name": "PERIOD",
+    "name": "PRICE_CHANGE_FEE",
     "inputs": [],
     "outputs": [
       {
@@ -219,6 +224,11 @@
         "internalType": "uint96"
       },
       {
+        "name": "periodMonths",
+        "type": "uint8",
+        "internalType": "uint8"
+      },
+      {
         "name": "periodStart",
         "type": "uint40",
         "internalType": "uint40"
@@ -269,6 +279,11 @@
         "name": "monthlyPrice",
         "type": "uint96",
         "internalType": "uint96"
+      },
+      {
+        "name": "periodMonths",
+        "type": "uint8",
+        "internalType": "uint8"
       }
     ],
     "outputs": [
@@ -282,6 +297,53 @@
   },
   {
     "type": "function",
+    "name": "createClubFree",
+    "inputs": [
+      {
+        "name": "monthlyPrice",
+        "type": "uint96",
+        "internalType": "uint96"
+      },
+      {
+        "name": "periodMonths",
+        "type": "uint8",
+        "internalType": "uint8"
+      },
+      {
+        "name": "deadline",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "signature",
+        "type": "bytes",
+        "internalType": "bytes"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "clubId",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "createSigner",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
     "name": "distribute",
     "inputs": [
       {
@@ -292,6 +354,49 @@
     ],
     "outputs": [],
     "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "freeCreateMessage",
+    "inputs": [
+      {
+        "name": "account",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
+        "name": "deadline",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "string",
+        "internalType": "string"
+      }
+    ],
+    "stateMutability": "pure"
+  },
+  {
+    "type": "function",
+    "name": "freeCreateUsed",
+    "inputs": [
+      {
+        "name": "",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "bool",
+        "internalType": "bool"
+      }
+    ],
+    "stateMutability": "view"
   },
   {
     "type": "function",
@@ -431,6 +536,44 @@
   },
   {
     "type": "function",
+    "name": "periodLength",
+    "inputs": [
+      {
+        "name": "months",
+        "type": "uint8",
+        "internalType": "uint8"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "pure"
+  },
+  {
+    "type": "function",
+    "name": "periodOf",
+    "inputs": [
+      {
+        "name": "clubId",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
     "name": "renounceOwnership",
     "inputs": [],
     "outputs": [],
@@ -467,6 +610,19 @@
   },
   {
     "type": "function",
+    "name": "setCreateSigner",
+    "inputs": [
+      {
+        "name": "createSigner_",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
     "name": "setParams",
     "inputs": [
       {
@@ -483,6 +639,24 @@
         "name": "minVaultStake_",
         "type": "uint256",
         "internalType": "uint256"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "setPeriod",
+    "inputs": [
+      {
+        "name": "clubId",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "periodMonths",
+        "type": "uint8",
+        "internalType": "uint8"
       }
     ],
     "outputs": [],
@@ -717,10 +891,29 @@
         "internalType": "uint96"
       },
       {
+        "name": "periodMonths",
+        "type": "uint8",
+        "indexed": false,
+        "internalType": "uint8"
+      },
+      {
         "name": "stake",
         "type": "uint256",
         "indexed": false,
         "internalType": "uint256"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "CreateSignerSet",
+    "inputs": [
+      {
+        "name": "createSigner",
+        "type": "address",
+        "indexed": false,
+        "internalType": "address"
       }
     ],
     "anonymous": false
@@ -827,6 +1020,25 @@
         "type": "uint256",
         "indexed": false,
         "internalType": "uint256"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "PeriodSet",
+    "inputs": [
+      {
+        "name": "clubId",
+        "type": "uint256",
+        "indexed": true,
+        "internalType": "uint256"
+      },
+      {
+        "name": "periodMonths",
+        "type": "uint8",
+        "indexed": false,
+        "internalType": "uint8"
       }
     ],
     "anonymous": false
@@ -980,6 +1192,11 @@
   },
   {
     "type": "error",
+    "name": "BadSignature",
+    "inputs": []
+  },
+  {
+    "type": "error",
     "name": "BelowMinStake",
     "inputs": []
   },
@@ -990,12 +1207,54 @@
   },
   {
     "type": "error",
+    "name": "DeadlineExpired",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "ECDSAInvalidSignature",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "ECDSAInvalidSignatureLength",
+    "inputs": [
+      {
+        "name": "length",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "ECDSAInvalidSignatureS",
+    "inputs": [
+      {
+        "name": "s",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "FreeCreateUsed",
+    "inputs": []
+  },
+  {
+    "type": "error",
     "name": "InvalidAddress",
     "inputs": []
   },
   {
     "type": "error",
     "name": "InvalidAmount",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "InvalidPeriod",
     "inputs": []
   },
   {
@@ -1075,6 +1334,22 @@
     "type": "error",
     "name": "StillLocked",
     "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "StringsInsufficientHexLength",
+    "inputs": [
+      {
+        "name": "value",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "length",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ]
   },
   {
     "type": "error",

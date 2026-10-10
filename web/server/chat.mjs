@@ -1,9 +1,11 @@
+import { randomBytes } from "node:crypto";
 import { createServer } from "node:http";
 import { mkdir, readdir, readFile, unlink, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { WebSocketServer } from "ws";
 import { createPublicClient, http, parseAbiItem, recoverMessageAddress } from "viem";
+import { privateKeyToAccount } from "viem/accounts";
 import {
   allowMessage,
   appendHistory,
@@ -15,7 +17,7 @@ import {
 
 const PORT = Number(process.env.CHAT_PORT || 8787);
 const RPC = process.env.ARC_RPC || "https://rpc.testnet.arc.io";
-const CLUB = process.env.BOOTH_CLUB || "0x0a7038198fEf3B8fB6825A732DACE28Df0B7d527";
+const CLUB = process.env.BOOTH_CLUB || "0x9a7544566926B5577449D4393fE38939E1B94376";
 const MAX_HISTORY = 100;
 const MAX_TEXT = 500;
 const MAX_NAME = 40;
@@ -23,7 +25,22 @@ const MAX_BIO = 200;
 const MAX_NICK = 24;
 const MAX_AVATAR = 200 * 1024;
 const MUTE_MS = 3 * 24 * 60 * 60 * 1000;
+const SESSION_MS = 7 * 24 * 60 * 60 * 1000;
+const FREE_FOLLOWERS = Number(process.env.FREE_CREATE_FOLLOWERS || 5000);
+const VOUCHER_TTL_MS = 10 * 60 * 1000;
+const sessions = new Map();
 
+const createSignerKey = process.env.CREATE_SIGNER_KEY || process.env.PRIVATE_KEY || "";
+const createSignerAccount = (() => {
+  if (!createSignerKey) return null;
+  try {
+    const key = createSignerKey.startsWith("0x") ? createSignerKey : `0x${createSignerKey}`;
+    return privateKeyToAccount(/** @type {`0x${string}`} */ (key));
+  } catch (err) {
+    console.warn("[aclub] CREATE_SIGNER_KEY invalid:", err?.message || err);
+    return null;
+  }
+})();
 const clubsAbi = [
   {
     type: "function",
@@ -33,6 +50,7 @@ const clubsAbi = [
     outputs: [
       { name: "owner", type: "address" },
       { name: "monthlyPrice", type: "uint96" },
+      { name: "periodMonths", type: "uint8" },
       { name: "periodStart", type: "uint40" },
       { name: "createUnlockAt", type: "uint40" },
       { name: "epoch", type: "uint32" },
@@ -42,6 +60,20 @@ const clubsAbi = [
       { name: "createStake", type: "uint128" },
       { name: "active", type: "bool" },
     ],
+  },
+  {
+    type: "function",
+    name: "freeCreateUsed",
+    stateMutability: "view",
+    inputs: [{ name: "account", type: "address" }],
+    outputs: [{ type: "bool" }],
+  },
+  {
+    type: "function",
+    name: "stakeToCreate",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ type: "uint256" }],
   },
 ];
 
@@ -144,6 +176,46 @@ bus.onMessage((clubId, payload) => {
   }
 });
 
+function sessionSignBody(nonce) {
+  return `Booth session\nnonce: ${nonce}`;
+}
+
+function issueSession(address) {
+  const token = randomBytes(32).toString("hex");
+  const exp = Date.now() + SESSION_MS;
+  const addr = address.toLowerCase();
+  sessions.set(token, { address: addr, exp });
+  return { token, address: addr, exp };
+}
+
+function sessionAddress(token) {
+  if (!token || typeof token !== "string") return null;
+  const row = sessions.get(token);
+  if (!row) return null;
+  if (row.exp < Date.now()) {
+    sessions.delete(token);
+    return null;
+  }
+  return row.address;
+}
+
+/** Prefer session token; fall back to EIP-191 signature. */
+async function authAddress(body, message) {
+  const fromSession = sessionAddress(body.session);
+  if (fromSession) {
+    if (body.address && String(body.address).toLowerCase() !== fromSession) return null;
+    return fromSession;
+  }
+  const address = String(body.address || "");
+  const signature = body.signature;
+  const nonce = Number(body.nonce);
+  if (!address || !signature || !Number.isFinite(nonce)) return null;
+  if (Math.abs(Date.now() - nonce) > 10 * 60 * 1000) return null;
+  const recovered = await recoverMessageAddress({ message, signature });
+  if (recovered.toLowerCase() !== address.toLowerCase()) return null;
+  return recovered.toLowerCase();
+}
+
 function signBody(clubId, nonce) {
   return `Booth chat\nclub: ${clubId}\nnonce: ${nonce}`;
 }
@@ -165,7 +237,7 @@ function twitterSignBody(addr, nonce, tweetUrl) {
 }
 
 function twitterProof(addr) {
-  return `booth:${addr.toLowerCase()}`;
+  return `room:${addr.toLowerCase()}`;
 }
 
 const metaFile = join(dataDir, "meta.json");
@@ -269,6 +341,35 @@ function stripHtml(html) {
     .trim();
 }
 
+async function fetchFollowers(handle) {
+  const user = String(handle || "").replace(/^@/, "").trim();
+  if (!user) throw new Error("missing twitter handle");
+  const bearer = process.env.TWITTER_BEARER_TOKEN || process.env.X_BEARER_TOKEN || "";
+  if (bearer) {
+    const res = await fetch(
+      `https://api.x.com/2/users/by/username/${encodeURIComponent(user)}?user.fields=public_metrics`,
+      { headers: { authorization: `Bearer ${bearer}` } },
+    );
+    if (!res.ok) throw new Error(`twitter api ${res.status}`);
+    const data = await res.json();
+    const n = Number(data?.data?.public_metrics?.followers_count);
+    if (!Number.isFinite(n)) throw new Error("twitter api missing followers");
+    return n;
+  }
+  const res = await fetch(`https://api.fxtwitter.com/${encodeURIComponent(user)}`, {
+    headers: { "user-agent": "aclub/0.1" },
+  });
+  if (!res.ok) throw new Error("cannot read twitter profile");
+  const data = await res.json();
+  const n = Number(data?.user?.followers ?? data?.followers);
+  if (!Number.isFinite(n)) throw new Error("cannot parse followers");
+  return n;
+}
+
+function freeCreateMessage(address, deadline) {
+  return `Booth free create\naddr: ${String(address).toLowerCase()}\ndeadline: ${deadline}`;
+}
+
 async function fetchTweet(statusId) {
   try {
     const res = await fetch(`https://api.fxtwitter.com/status/${statusId}`, {
@@ -314,7 +415,7 @@ async function liveStaff(clubId) {
     args: [BigInt(clubId)],
   });
   const owner = club[0];
-  const epoch = club[4];
+  const epoch = club[5]; // after periodMonths insert
   const minStake = await client.readContract({
     address: CLUB,
     abi: vaultAbi,
@@ -329,7 +430,6 @@ async function liveStaff(clubId) {
   const ranked = [];
   await Promise.all(
     list.map(async (user) => {
-      if (user.toLowerCase() === owner.toLowerCase()) return;
       const [vault, served, weight] = await Promise.all([
         client.readContract({
           address: CLUB,
@@ -525,32 +625,17 @@ async function buildRank() {
       functionName: "clubs",
       args: [i],
     });
-    if (!club[9]) continue; // inactive
+    if (!club[10]) continue; // inactive
     const price = Number(club[1]);
-    const members = Number(club[5]);
-    const feePool = Number(club[7]);
-    const list = await client.readContract({
-      address: CLUB,
-      abi: vaultAbi,
-      functionName: "stakersOf",
-      args: [i],
-    });
-    let stake = 0;
-    for (const user of list) {
-      const vault = await client.readContract({
-        address: CLUB,
-        abi: vaultAbi,
-        functionName: "vaults",
-        args: [i, user],
-      });
-      stake += Number(vault[0]);
-    }
+    const members = Number(club[6]);
+    const feePool = Number(club[8]);
+    const createLock = Number(club[9] || 0); // USDC locked at create
     const joinAmt = joinPaid[id] || members * price;
     rows.push({
       id: Number(id),
-      name: meta[id]?.name || `Booth #${id}`,
+      name: meta[id]?.name || `#${id}`,
       bio: meta[id]?.bio || "",
-      stakeBooth: stake,
+      lockUsdc: createLock,
       joinUsdc: joinAmt,
       leaveCount: leaveCount[id] || 0,
       activity: activity[id] || 0,
@@ -560,7 +645,7 @@ async function buildRank() {
     });
   }
 
-  const nStake = norm(rows.map((r) => r.stakeBooth));
+  const nLock = norm(rows.map((r) => r.lockUsdc));
   const nJoin = norm(rows.map((r) => r.joinUsdc));
   const nLeave = norm(rows.map((r) => r.leaveCount));
   const nAct = norm(rows.map((r) => r.activity));
@@ -568,7 +653,7 @@ async function buildRank() {
   const ranked = rows
     .map((r, i) => {
       const score =
-        weights.stake * nStake[i] +
+        weights.stake * nLock[i] +
         weights.join * nJoin[i] +
         weights.leave * nLeave[i] +
         weights.activity * nAct[i];
@@ -576,7 +661,7 @@ async function buildRank() {
         ...r,
         score: Math.round(score * 10000) / 10000,
         parts: {
-          stake: Math.round(nStake[i] * 1000) / 1000,
+          stake: Math.round(nLock[i] * 1000) / 1000,
           join: Math.round(nJoin[i] * 1000) / 1000,
           leave: Math.round(nLeave[i] * 1000) / 1000,
           activity: Math.round(nAct[i] * 1000) / 1000,
@@ -610,7 +695,7 @@ async function buildRank() {
 const httpServer = createServer(async (req, res) => {
   res.setHeader("access-control-allow-origin", "*");
   res.setHeader("access-control-allow-headers", "content-type");
-  res.setHeader("access-control-allow-methods", "GET,PUT,DELETE,OPTIONS");
+  res.setHeader("access-control-allow-methods", "GET,POST,PUT,DELETE,OPTIONS");
   if (req.method === "OPTIONS") {
     res.writeHead(204);
     res.end();
@@ -626,6 +711,96 @@ const httpServer = createServer(async (req, res) => {
         rooms: rooms.size,
         memberCacheMs: Number(process.env.MEMBER_CACHE_MS || 60_000),
         maxHistory: MAX_HISTORY,
+        sessions: sessions.size,
+      });
+    }
+    if (req.method === "POST" && url.pathname === "/session") {
+      const body = await readBody(req);
+      const address = String(body.address || "");
+      const nonce = Number(body.nonce);
+      const signature = body.signature;
+      if (!address || !signature || !Number.isFinite(nonce)) {
+        return json(res, 400, { error: "missing fields" });
+      }
+      if (Math.abs(Date.now() - nonce) > 10 * 60 * 1000) {
+        return json(res, 400, { error: "nonce expired" });
+      }
+      const recovered = await recoverMessageAddress({
+        message: sessionSignBody(nonce),
+        signature,
+      });
+      if (recovered.toLowerCase() !== address.toLowerCase()) {
+        return json(res, 401, { error: "bad signature" });
+      }
+      return json(res, 200, issueSession(recovered));
+    }
+    if (req.method === "POST" && url.pathname === "/create-quote") {
+      const body = await readBody(req);
+      const address = await authAddress(body, sessionSignBody(Number(body.nonce)));
+      if (!address) return json(res, 401, { error: "bad auth" });
+      const profiles = await loadProfiles();
+      const row = profiles[address.toLowerCase()];
+      const twitter = row?.twitter || "";
+      const used = await client.readContract({
+        address: CLUB,
+        abi: clubsAbi,
+        functionName: "freeCreateUsed",
+        args: [address],
+      });
+      const stake = await client.readContract({
+        address: CLUB,
+        abi: clubsAbi,
+        functionName: "stakeToCreate",
+      });
+      const base = {
+        address,
+        twitter,
+        minFollowers: FREE_FOLLOWERS,
+        stakeToCreate: stake.toString(),
+        freeCreateUsed: !!used,
+        signerReady: !!createSignerAccount,
+      };
+      if (used) {
+        return json(res, 200, { ...base, free: false, reason: "already_used", followers: null });
+      }
+      if (!twitter) {
+        return json(res, 200, { ...base, free: false, reason: "need_twitter", followers: null });
+      }
+      let followers = 0;
+      try {
+        followers = await fetchFollowers(twitter);
+      } catch (err) {
+        return json(res, 200, {
+          ...base,
+          free: false,
+          reason: "followers_unavailable",
+          followers: null,
+          detail: err instanceof Error ? err.message : "lookup failed",
+        });
+      }
+      if (followers < FREE_FOLLOWERS) {
+        return json(res, 200, { ...base, free: false, reason: "below_threshold", followers });
+      }
+      if (!createSignerAccount) {
+        return json(res, 200, {
+          ...base,
+          free: false,
+          reason: "signer_missing",
+          followers,
+        });
+      }
+      const deadline = Math.floor((Date.now() + VOUCHER_TTL_MS) / 1000);
+      const message = freeCreateMessage(address, deadline);
+      const signature = await createSignerAccount.signMessage({ message });
+      return json(res, 200, {
+        ...base,
+        free: true,
+        reason: "ok",
+        followers,
+        deadline,
+        signature,
+        message,
+        signer: createSignerAccount.address,
       });
     }
     if (req.method === "GET" && url.pathname === "/rank") {
@@ -642,23 +817,14 @@ const httpServer = createServer(async (req, res) => {
     if (req.method === "PUT" && url.pathname === "/meta") {
       const body = await readBody(req);
       const clubId = String(body.clubId || "");
-      const nonce = Number(body.nonce);
-      const address = String(body.address || "");
-      const signature = body.signature;
       const name = String(body.name || "").trim().slice(0, MAX_NAME);
       const bio = String(body.bio || "").trim().slice(0, MAX_BIO);
-      if (!clubId || !address || !signature || !Number.isFinite(nonce) || !name) {
+      if (!clubId || !name) {
         return json(res, 400, { error: "missing fields" });
       }
-      if (Math.abs(Date.now() - nonce) > 10 * 60 * 1000) {
-        return json(res, 400, { error: "nonce expired" });
-      }
-      const recovered = await recoverMessageAddress({
-        message: metaSignBody(clubId, nonce),
-        signature,
-      });
-      if (recovered.toLowerCase() !== address.toLowerCase()) {
-        return json(res, 401, { error: "bad signature" });
+      const recovered = await authAddress(body, metaSignBody(clubId, Number(body.nonce)));
+      if (!recovered) {
+        return json(res, 401, { error: "bad auth" });
       }
       const club = await client.readContract({
         address: CLUB,
@@ -691,21 +857,12 @@ const httpServer = createServer(async (req, res) => {
       const body = await readBody(req);
       const clubId = String(body.clubId || "");
       const target = String(body.target || "");
-      const nonce = Number(body.nonce);
-      const address = String(body.address || "");
-      const signature = body.signature;
-      if (!clubId || !target || !address || !signature || !Number.isFinite(nonce)) {
+      if (!clubId || !target) {
         return json(res, 400, { error: "missing fields" });
       }
-      if (Math.abs(Date.now() - nonce) > 10 * 60 * 1000) {
-        return json(res, 400, { error: "nonce expired" });
-      }
-      const recovered = await recoverMessageAddress({
-        message: muteSignBody(clubId, target, nonce),
-        signature,
-      });
-      if (recovered.toLowerCase() !== address.toLowerCase()) {
-        return json(res, 401, { error: "bad signature" });
+      const recovered = await authAddress(body, muteSignBody(clubId, target, Number(body.nonce)));
+      if (!recovered) {
+        return json(res, 401, { error: "bad auth" });
       }
       const staff = await liveStaff(clubId);
       if (!isStaff(staff, recovered)) {
@@ -760,23 +917,14 @@ const httpServer = createServer(async (req, res) => {
     }
     if (req.method === "PUT" && url.pathname === "/profile") {
       const body = await readBody(req);
-      const nonce = Number(body.nonce);
-      const address = String(body.address || "");
-      const signature = body.signature;
       const name = String(body.name || "").trim().slice(0, MAX_NICK);
       const bio = String(body.bio || "").trim().slice(0, MAX_BIO);
-      if (!address || !signature || !Number.isFinite(nonce) || !name) {
+      if (!name) {
         return json(res, 400, { error: "missing fields" });
       }
-      if (Math.abs(Date.now() - nonce) > 10 * 60 * 1000) {
-        return json(res, 400, { error: "nonce expired" });
-      }
-      const recovered = await recoverMessageAddress({
-        message: profileSignBody(nonce),
-        signature,
-      });
-      if (recovered.toLowerCase() !== address.toLowerCase()) {
-        return json(res, 401, { error: "bad signature" });
+      const recovered = await authAddress(body, profileSignBody(Number(body.nonce)));
+      if (!recovered) {
+        return json(res, 401, { error: "bad auth" });
       }
       const addr = recovered.toLowerCase();
       const all = await loadProfiles();
@@ -806,23 +954,17 @@ const httpServer = createServer(async (req, res) => {
     }
     if (req.method === "PUT" && url.pathname === "/profile/twitter") {
       const body = await readBody(req);
-      const nonce = Number(body.nonce);
-      const address = String(body.address || "");
-      const signature = body.signature;
       const tweetUrlRaw = String(body.tweetUrl || "");
-      if (!address || !signature || !tweetUrlRaw || !Number.isFinite(nonce)) {
+      if (!tweetUrlRaw) {
         return json(res, 400, { error: "missing fields" });
       }
-      if (Math.abs(Date.now() - nonce) > 30 * 60 * 1000) {
-        return json(res, 400, { error: "nonce expired" });
-      }
       const { id, url: tweetUrl } = normalizeTweetUrl(tweetUrlRaw);
-      const recovered = await recoverMessageAddress({
-        message: twitterSignBody(address, nonce, tweetUrl),
-        signature,
-      });
-      if (recovered.toLowerCase() !== address.toLowerCase()) {
-        return json(res, 401, { error: "bad signature" });
+      const recovered = await authAddress(
+        body,
+        twitterSignBody(String(body.address || ""), Number(body.nonce), tweetUrl),
+      );
+      if (!recovered) {
+        return json(res, 401, { error: "bad auth" });
       }
       const addr = recovered.toLowerCase();
       const proof = twitterProof(addr);
@@ -852,21 +994,12 @@ const httpServer = createServer(async (req, res) => {
     }
     if (req.method === "DELETE" && url.pathname === "/profile/twitter") {
       const body = await readBody(req);
-      const nonce = Number(body.nonce);
-      const address = String(body.address || "");
-      const signature = body.signature;
-      if (!address || !signature || !Number.isFinite(nonce)) {
-        return json(res, 400, { error: "missing fields" });
-      }
-      if (Math.abs(Date.now() - nonce) > 10 * 60 * 1000) {
-        return json(res, 400, { error: "nonce expired" });
-      }
-      const recovered = await recoverMessageAddress({
-        message: `Booth twitter unbind\naddr: ${address.toLowerCase()}\nnonce: ${nonce}`,
-        signature,
-      });
-      if (recovered.toLowerCase() !== address.toLowerCase()) {
-        return json(res, 401, { error: "bad signature" });
+      const recovered = await authAddress(
+        body,
+        `Booth twitter unbind\naddr: ${String(body.address || "").toLowerCase()}\nnonce: ${Number(body.nonce)}`,
+      );
+      if (!recovered) {
+        return json(res, 401, { error: "bad auth" });
       }
       const addr = recovered.toLowerCase();
       const all = await loadProfiles();
@@ -880,8 +1013,7 @@ const httpServer = createServer(async (req, res) => {
       await saveProfiles();
       return json(res, 200, publicProfile(addr, prev));
     }
-    res.writeHead(200, { "content-type": "text/plain" });
-    res.end("booth chat");
+    return json(res, 404, { error: "not found" });
   } catch (err) {
     json(res, 500, { error: err instanceof Error ? err.message : "server error" });
   }
@@ -903,21 +1035,12 @@ wss.on("connection", (ws) => {
     try {
       if (data.type === "hello") {
         const clubId = String(data.clubId || "");
-        const nonce = Number(data.nonce);
-        const address = String(data.address || "");
-        const signature = data.signature;
-        if (!clubId || !address || !signature || !Number.isFinite(nonce)) {
+        if (!clubId) {
           return send(ws, { type: "error", message: "missing hello fields" });
         }
-        if (Math.abs(Date.now() - nonce) > 10 * 60 * 1000) {
-          return send(ws, { type: "error", message: "nonce expired" });
-        }
-        const recovered = await recoverMessageAddress({
-          message: signBody(clubId, nonce),
-          signature,
-        });
-        if (recovered.toLowerCase() !== address.toLowerCase()) {
-          return send(ws, { type: "error", message: "bad signature" });
+        const recovered = await authAddress(data, signBody(clubId, Number(data.nonce)));
+        if (!recovered) {
+          return send(ws, { type: "error", message: "bad auth" });
         }
         if (!(await isMember(clubId, recovered))) {
           return send(ws, { type: "error", message: "not a member" });

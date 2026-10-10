@@ -4,13 +4,15 @@
   "rpc": "https://rpc.testnet.arc.io",
   "explorer": "https://explorer.testnet.arc.io",
   "usdc": "0x3600000000000000000000000000000000000000",
-  "booth": "0xeba932E6D6cBe3530324B5b2d56904251883aD59",
-  "boothClub": "0x0a7038198fEf3B8fB6825A732DACE28Df0B7d527",
+  "booth": "0xabBFf6eF1f160dbF1e9c96E2b59Da0CDd2568676",
+  "boothClub": "0x9a7544566926B5577449D4393fE38939E1B94376",
   "ops": "0xcAa6f7793cA6Cb2f05451EB809a543483342Aca6",
   "protocolOwner": "0xcAa6f7793cA6Cb2f05451EB809a543483342Aca6",
+  "createSigner": "0xcAa6f7793cA6Cb2f05451EB809a543483342Aca6",
   "stakeToCreate": "10000000",
   "minVaultStake": "100000000000000000000",
-  "periodDays": 90,
+  "freeCreateFollowers": 5000,
+  "periodOptionsMonths": [1, 3, 6],
   "stakeLockDays": 90,
-  "notes": "Create stake is 10 USDC locked 90 days; dues cover 90 days; vault BOOTH lock 90 days"
+  "notes": "Free create once per wallet if bound X account has >=5000 followers (off-chain check + createSigner voucher). Else 10 USDC create stake locked 90d. Distribute: 50% owner role + 50% top-5 weighted stake (owner stake eligible). setPrice charges 5 USDC to ops each call."
 }

@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "concurrently -k \"npm run chat\" \"vite\"",
-    "chat": "node server/chat.mjs",
+    "chat": "node --env-file=../.env server/chat.mjs",
     "dev:web": "vite",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview"

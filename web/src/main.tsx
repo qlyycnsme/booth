@@ -20,7 +20,7 @@ class Boundary extends Component<{ children: ReactNode }, { err: string | null }
   render() {
     if (this.state.err) {
       return (
-        <div style={{ padding: 24, color: "#f3e6d4", fontFamily: "serif" }}>
+        <div style={{ padding: 24, color: "#f2e8dc", fontFamily: "Noto Sans SC, sans-serif" }}>
           <p>Error / 页面出错：{this.state.err}</p>
           <button onClick={() => location.reload()}>Reload / 刷新</button>
         </div>
