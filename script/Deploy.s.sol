@@ -13,7 +13,7 @@ contract DeployScript is Script {
         address ops = vm.envAddress("OPS_ADDRESS");
         address protocol = vm.envAddress("PROTOCOL_OWNER");
         address createSigner = vm.envOr("CREATE_SIGNER", protocol);
-        uint256 stakeToCreate = vm.envOr("STAKE_TO_CREATE", uint256(10_000_000)); // 10 USDC (6 dp)
+        uint256 stakeToCreate = vm.envOr("STAKE_TO_CREATE", uint256(1_000_000)); // 1 USDC (6 dp)
         uint256 minVault = vm.envOr("MIN_VAULT_STAKE", uint256(100 ether));
         address usdc = vm.envOr("USDC", ARC_USDC);
 
