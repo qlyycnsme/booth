@@ -16,8 +16,8 @@ import {
 } from "./scale.mjs";
 
 const PORT = Number(process.env.CHAT_PORT || 8787);
-const RPC = process.env.ARC_RPC || "https://rpc.testnet.arc.io";
-const CLUB = process.env.BOOTH_CLUB || "0x9a7544566926B5577449D4393fE38939E1B94376";
+const RPC = process.env.ARC_RPC || "https://rpc.mainnet.arc.io";
+const CLUB = process.env.BOOTH_CLUB || "0xb928F56b6011A624B55140638eeEB2d3E4C30b98";
 const MAX_HISTORY = 100;
 const MAX_TEXT = 500;
 const MAX_NAME = 40;

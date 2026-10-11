@@ -10,7 +10,7 @@ import {
 } from "wagmi";
 import { formatUnits, maxUint256, parseEventLogs, parseUnits, type Abi, type Address, type Hex } from "viem";
 import boothClubAbiJson from "./abi/BoothClub.json";
-import { BOOTH_CLUB, USDC, arcTestnet, erc20Abi } from "./config";
+import { BOOTH_CLUB, USDC, arc, erc20Abi } from "./config";
 import { LangToggle, useLang } from "./i18n";
 import { clearSession, ensureSession, isUserReject, peekSession } from "./session";
 
@@ -127,7 +127,7 @@ export function App() {
   const [editPrice, setEditPrice] = useState("1");
   const [editPeriod, setEditPeriod] = useState<1 | 3 | 6>(3);
 
-  const wrongChain = isConnected && chainId !== arcTestnet.id;
+  const wrongChain = isConnected && chainId !== arc.id;
   const member =
     !!address &&
     paid > 0n &&
@@ -306,8 +306,8 @@ export function App() {
   }
 
   async function ensureChain() {
-    if (chainId !== arcTestnet.id) {
-      await switchChain({ chainId: arcTestnet.id });
+    if (chainId !== arc.id) {
+      await switchChain({ chainId: arc.id });
     }
   }
 
@@ -546,7 +546,7 @@ export function App() {
               </button>
               <div className="wallet-actions">
                 {wrongChain && (
-                  <button className="btn" onClick={() => switchChain({ chainId: arcTestnet.id })}>
+                  <button className="btn" onClick={() => switchChain({ chainId: arc.id })}>
                     {t("switchChain")}
                   </button>
                 )}

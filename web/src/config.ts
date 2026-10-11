@@ -2,28 +2,28 @@ import { defineChain } from "viem";
 import { createConfig, http } from "wagmi";
 import { injected } from "wagmi/connectors";
 
-export const arcTestnet = defineChain({
-  id: 5042002,
-  name: "Arc Testnet",
+export const arc = defineChain({
+  id: 5042,
+  name: "Arc",
   nativeCurrency: { name: "USDC", symbol: "USDC", decimals: 18 },
   rpcUrls: {
-    default: { http: ["https://rpc.testnet.arc.io"] },
+    default: { http: ["https://rpc.mainnet.arc.io"] },
   },
   blockExplorers: {
-    default: { name: "Arc Explorer", url: "https://explorer.testnet.arc.io" },
+    default: { name: "Arc Explorer", url: "https://explorer.arc.io" },
   },
-  testnet: true,
+  testnet: false,
 });
 
 export const USDC = "0x3600000000000000000000000000000000000000" as const;
-export const BOOTH = "0xabBFf6eF1f160dbF1e9c96E2b59Da0CDd2568676" as const;
-export const BOOTH_CLUB = "0x9a7544566926B5577449D4393fE38939E1B94376" as const;
+export const BOOTH = "0x35052b4d76b8C4bdf52FFD3105CaDb42CC1CcD82" as const;
+export const BOOTH_CLUB = "0xb928F56b6011A624B55140638eeEB2d3E4C30b98" as const;
 
 export const config = createConfig({
-  chains: [arcTestnet],
+  chains: [arc],
   connectors: [injected()],
   transports: {
-    [arcTestnet.id]: http("https://rpc.testnet.arc.io"),
+    [arc.id]: http("https://rpc.mainnet.arc.io"),
   },
 });
 

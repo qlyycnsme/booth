@@ -5,7 +5,7 @@ import {Script, console} from "forge-std/Script.sol";
 import {BoothClub} from "../src/BoothClub.sol";
 import {BoothToken} from "../src/BoothToken.sol";
 
-/// @dev Arc testnet USDC is the same 0x3600... interface. Set OPS_ADDRESS and PROTOCOL_OWNER.
+/// @dev Arc USDC is 0x3600... on mainnet and testnet. Set OPS_ADDRESS and PROTOCOL_OWNER.
 contract DeployScript is Script {
     address constant ARC_USDC = 0x3600000000000000000000000000000000000000;
 

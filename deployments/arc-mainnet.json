@@ -1,0 +1,18 @@
+{
+  "chainId": 5042,
+  "network": "arc-mainnet",
+  "rpc": "https://rpc.mainnet.arc.io",
+  "explorer": "https://explorer.arc.io",
+  "usdc": "0x3600000000000000000000000000000000000000",
+  "booth": "0x35052b4d76b8C4bdf52FFD3105CaDb42CC1CcD82",
+  "boothClub": "0xb928F56b6011A624B55140638eeEB2d3E4C30b98",
+  "ops": "0xcAa6f7793cA6Cb2f05451EB809a543483342Aca6",
+  "protocolOwner": "0xcAa6f7793cA6Cb2f05451EB809a543483342Aca6",
+  "createSigner": "0xcAa6f7793cA6Cb2f05451EB809a543483342Aca6",
+  "stakeToCreate": "10000000",
+  "minVaultStake": "100000000000000000000",
+  "freeCreateFollowers": 5000,
+  "periodOptionsMonths": [1, 3, 6],
+  "stakeLockDays": 90,
+  "notes": "Mainnet deploy. Free create once per wallet if bound X >=5000 followers. setPrice charges 5 USDC to ops. Distribute: 50% owner role + 50% top-5 weighted stake (owner stake eligible). Protocol minted 1M BOOTH for vault testing/liquidity."
+}
