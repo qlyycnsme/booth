@@ -849,7 +849,56 @@ export function App() {
           </p>
         </main>
       </div>
+      <SiteFooter />
     </div>
+  );
+}
+
+function SiteFooter() {
+  const { t } = useLang();
+  const [copied, setCopied] = useState(false);
+
+  async function copyCa() {
+    try {
+      await navigator.clipboard.writeText(BOOTH_CLUB);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1600);
+    } catch {
+      setCopied(false);
+    }
+  }
+
+  return (
+    <footer className="site-foot">
+      <span className="foot-copy">© 2026 aclub.fun</span>
+      <a className="foot-built" href="https://docs.arc.io" target="_blank" rel="noreferrer">
+        <svg className="arc-mark" viewBox="0 0 16 16" aria-hidden="true">
+          <path
+            d="M8 1.5a6.5 6.5 0 1 0 6.2 4.5"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.6"
+            strokeLinecap="round"
+          />
+          <circle cx="13.2" cy="5.2" r="1.35" fill="currentColor" />
+        </svg>
+        Built on Arc
+      </a>
+      <button type="button" className={`ca-chip${copied ? " on" : ""}`} onClick={copyCa} title={BOOTH_CLUB}>
+        <em>CA</em>
+        <code>{copied ? t("copied") : short(BOOTH_CLUB)}</code>
+        <svg viewBox="0 0 16 16" aria-hidden="true">
+          <rect x="5" y="5" width="8" height="8" rx="1.5" fill="none" stroke="currentColor" strokeWidth="1.4" />
+          <path
+            d="M3 10.5V3.8A1.3 1.3 0 0 1 4.3 2.5H10"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.4"
+            strokeLinecap="round"
+          />
+        </svg>
+      </button>
+    </footer>
   );
 }
 
