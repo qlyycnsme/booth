@@ -92,3 +92,34 @@ export async function ensureSession(
   });
   return minting;
 }
+
+/** JSON fetch with session; on bad auth, re-sign once (covers chat process restarts). */
+export async function sessionFetch<T extends Record<string, unknown>>(
+  path: string,
+  init: {
+    method?: string;
+    address: string;
+    body?: Record<string, unknown>;
+    signMessageAsync: (args: { message: string }) => Promise<Hex>;
+  },
+): Promise<{ res: Response; data: T; session: string }> {
+  const method = init.method || "POST";
+  const run = async (force: boolean) => {
+    const session = await ensureSession(init.address, init.signMessageAsync, force);
+    const res = await fetch(path, {
+      method,
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ ...(init.body || {}), address: init.address, session }),
+    });
+    const data = (await res.json().catch(() => ({}))) as T & { error?: string };
+    return { res, data, session };
+  };
+
+  let out = await run(false);
+  const err = String((out.data as { error?: string }).error || "");
+  if (out.res.status === 401 || /bad auth|expired/i.test(err)) {
+    clearSession();
+    out = await run(true);
+  }
+  return out;
+}

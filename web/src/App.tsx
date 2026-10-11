@@ -12,7 +12,7 @@ import { formatUnits, maxUint256, parseEventLogs, parseUnits, type Abi, type Add
 import boothClubAbiJson from "./abi/BoothClub.json";
 import { BOOTH_CLUB, USDC, arc, erc20Abi } from "./config";
 import { LangToggle, useLang } from "./i18n";
-import { clearSession, ensureSession, isUserReject, peekSession } from "./session";
+import { clearSession, ensureSession, isUserReject, peekSession, sessionFetch } from "./session";
 
 const clubAbi = boothClubAbiJson as Abi;
 
@@ -342,19 +342,14 @@ export function App() {
     try {
       await ensureChain();
       const monthly = parseUnits(price || "0", 6);
-      const session = await ensureSession(address, signMessageAsync);
-      const quote = (await fetch("/create-quote", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ address, session }),
-      }).then((r) => r.json())) as {
+      const { data: quote } = await sessionFetch<{
         free?: boolean;
         reason?: string;
         followers?: number | null;
         deadline?: number;
         signature?: Hex;
         error?: string;
-      };
+      }>("/create-quote", { address, signMessageAsync });
       if (quote.error) throw new Error(quote.error);
 
       let hash: Hex;
@@ -387,21 +382,17 @@ export function App() {
       }) as { eventName?: string; args?: { clubId?: bigint } }[];
       const newId = created.find((e) => e.eventName === "ClubCreated")?.args?.clubId;
       if (newId !== undefined) {
-        const res = await fetch("/meta", {
+        const { res, data: err } = await sessionFetch<{ error?: string }>("/meta", {
           method: "PUT",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({
+          address,
+          signMessageAsync,
+          body: {
             clubId: newId.toString(),
             name,
             bio: clubBio.trim(),
-            address,
-            session,
-          }),
+          },
         });
-        if (!res.ok) {
-          const err = await res.json().catch(() => ({}));
-          throw new Error((err as { error?: string }).error || t("metaFail"));
-        }
+        if (!res.ok) throw new Error(err.error || t("metaFail"));
         setSelected(newId);
         setClubName("");
         setClubBio("");
@@ -931,20 +922,17 @@ function ProfilePage({
     setBusy(true);
     setHint("");
     try {
-      const session = await ensureSession(addr, signMessageAsync);
-      const res = await fetch("/profile", {
+      const { res, data: body } = await sessionFetch<{ error?: string }>("/profile", {
         method: "PUT",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          address: addr,
-          session,
+        address: addr,
+        signMessageAsync,
+        body: {
           name: nick,
           bio: bio.trim(),
           avatar: avatarData || undefined,
-        }),
+        },
       });
-      const body = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error((body as { error?: string }).error || t("saveFail"));
+      if (!res.ok) throw new Error(body.error || t("saveFail"));
       await onSaved();
       setHint(t("profileSaved"));
     } catch (e) {
@@ -965,17 +953,12 @@ function ProfilePage({
     try {
       const idMatch = raw.match(/\/status(?:es)?\/(\d+)/);
       if (!idMatch) throw new Error(t("needTweetLink"));
-      const session = await ensureSession(addr, signMessageAsync);
-      const res = await fetch("/profile/twitter", {
+      const { res, data: body } = await sessionFetch<Profile & { error?: string }>("/profile/twitter", {
         method: "PUT",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          address: addr,
-          session,
-          tweetUrl: raw,
-        }),
+        address: addr,
+        signMessageAsync,
+        body: { tweetUrl: raw },
       });
-      const body = (await res.json().catch(() => ({}))) as Profile & { error?: string };
       if (!res.ok) throw new Error(body.error || t("bindFail"));
       setTwitter(body.twitter || "");
       if (body.name) setName(body.name);
@@ -993,13 +976,11 @@ function ProfilePage({
     setBusy(true);
     setHint("");
     try {
-      const session = await ensureSession(addr, signMessageAsync);
-      const res = await fetch("/profile/twitter", {
+      const { res, data: body } = await sessionFetch<{ error?: string }>("/profile/twitter", {
         method: "DELETE",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ address: addr, session }),
+        address: addr,
+        signMessageAsync,
       });
-      const body = (await res.json().catch(() => ({}))) as { error?: string };
       if (!res.ok) throw new Error(body.error || t("unbindFail"));
       setTwitter("");
       await onSaved();
